@@ -1,0 +1,179 @@
+---
+title: "Scraping SUNYAC"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+# Intro
+Here we will pull stats by game for individuals and teams in SUNYAC.
+
+# Load libraries
+
+```{r}
+library(tidyverse)
+library(rvest)
+library(xml2)
+library(glue)
+library(lubridate)
+```
+
+
+# Web scraping
+
+```{r}
+standings <- rvest::read_html("https://www.sunyacsports.com/sports/msoc/2022-23/standings") |>
+    html_table()
+```
+
+```{r}
+# overall season statistics
+"https://www.sunyacsports.com/sports/msoc/2022-23/teams?sort=name&r=0&pos="
+```
+
+
+The box score pulls as a list that is split up on the website:
+    * 
+```{r}
+# box score game 
+read_xml("https://www.sunyacsports.com/sports/msoc/2022-23/boxscores/20220913_gvpq.xml")
+
+
+box_score_list <- read_html("https://www.sunyacsports.com/sports/msoc/2022-23/boxscores/20220913_gvpq.xml") |>
+    html_table()
+
+
+box_score_list[[13]]
+# 1. score by half
+# 2. players away on left
+# 3. players home on right
+# 4. goalie away on left
+# 5. goalie away on right
+# 6. game stats
+# 7. shots on goal by team 
+```
+
+```{r}
+# location 
+```
+
+```{r}
+read_html("https://www.sunyacsports.com/sports/msoc/2022-23/boxscores/") 
+```
+
+Grab team ids
+
+```{r}
+schedules <- "https://www.sunyacsports.com/sports/msoc/2022-23/schedule" |>
+    read_html()
+
+team_ids <- schedules |>
+    html_nodes("select#select-box-team-filter") |>
+    html_nodes("option") |>
+    html_attr("value") %>%
+    .[-1] %>%
+    .[-length(.)]
+
+```
+
+
+
+```{r}
+
+grab_team_links <- function(team_urls) {
+    full_score_team <-
+        read_html(glue("https://www.sunyacsports.com{team_urls}"))
+    
+    boxscore_links <- full_score_team |>
+        html_nodes("a.link") |>
+        html_attr("href")  %>%
+        .[str_detect(., '.xml')]
+    
+    boxscore_df <- tibble(
+        boxscore_links = glue("https://sunyacsports.com{boxscore_links}"),
+        date = ymd(str_extract(boxscore_links, "2022[0-9]+")),
+        has_played = ifelse(lubridate::today() - date < 0, "no", "yes")
+    ) |>
+        filter(has_played == "yes")
+    
+    return(boxscore_df)
+}
+
+
+pull_teams <- function(df, index){
+    team_name <- df |> 
+        pluck(1) |>
+        slice(index) |>
+        pull(Final)
+    
+    opponent <- df |> 
+        pluck(1) |>
+        slice(-index) |>
+        pull(Final)
+    
+    message(glue('pulling match for {team_name}'))
+    
+    player_stats <- df |>
+        pluck(index + 1) |>
+        mutate(PLAYER = str_squish(PLAYER)) |>
+        separate(
+            PLAYER,
+            c("NO", "PLAYER"),
+            sep = " - ",
+            extra = "merge",
+            fill = "right"
+        ) |>
+        filter(!str_detect(PLAYER, "TM|TOTALS|TEAM|Team")) |>
+        mutate(NO = as.double(NO),
+               team_name = team_name,
+               opponent=opponent)
+}
+
+
+all_matches <- function(links_per_team){
+    df <- links_per_team |>
+        read_html() |>
+        html_table()
+    
+    team1 <- pull_teams(df, 1)
+    team2 <- pull_teams(df, 2)
+    
+    combined_teams <- team1 |> 
+        bind_rows(team2)
+    
+    return(combined_teams)
+}
+
+all_team_links <- team_ids |> 
+    map_dfr(grab_team_links) |>
+    pull(boxscore_links) 
+
+# run in parallel CPUs
+library(furrr)
+plan(multisession, workers=7)
+
+all_team_stats <- all_team_links |>
+    future_map(all_matches)
+
+sunyac_player_stats <- all_team_stats |>
+    bind_rows()
+
+
+sunyac_player_stats |>
+    filter(team_name=="Fredonia") |>
+    filter(str_detect(PLAYER, "Jacob Gennaro")) 
+
+sunyac_player_stats |>
+    group_by(PLAYER, team_name) |>
+    summarize(TOTAL_GOALS=sum(G)) |>
+    arrange(desc(TOTAL_GOALS)) |>
+    ungroup()
+```
+
+
+```{r}
+
+```
+
+
